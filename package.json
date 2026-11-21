@@ -1,0 +1,27 @@
+{
+  "name": "tequity-two-way-sync",
+  "version": "1.0.0",
+  "description": "Two-way sync of customer and contact records between Salesforce and Tequity Portal",
+  "main": "dist/src/demo.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test dist/test/*.test.js",
+    "demo": "tsc && node dist/src/demo.js",
+    "start": "tsc && node dist/src/demo.js",
+    "server": "tsc && node dist/src/server.js"
+  },
+  "keywords": [
+    "sync",
+    "salesforce",
+    "outbox",
+    "idempotency",
+    "rate-limiter"
+  ],
+  "author": "Candidate <candidate@tequity.tech>",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
