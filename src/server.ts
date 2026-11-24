@@ -251,7 +251,10 @@ function getHtmlDashboard(): string {
   <div class="container">
     <div class="header-bar">
       <h1>Two-Way Sync Interactive Control Panel</h1>
-      <a href="/docs" class="swagger-btn">📖 Open Swagger UI API Explorer</a>
+      <div>
+        <a href="/design" class="swagger-btn" style="margin-right: 10px; background: #334155;">📄 View DESIGN.md</a>
+        <a href="/docs" class="swagger-btn">📖 Open Swagger UI</a>
+      </div>
     </div>
     <div class="subtitle">Simulate real-time Salesforce Webhooks, Portal Edits, Outages, and Outbox Drains with 1 click.</div>
 
@@ -430,6 +433,45 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && (url.pathname === '/docs' || url.pathname === '/swagger')) {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       return res.end(getSwaggerUiHtml());
+    }
+
+    // 1b. GET /design -> Beautiful rendered view of DESIGN.md
+    if (req.method === 'GET' && (url.pathname === '/design' || url.pathname === '/design.html')) {
+      const fs = await import('fs');
+      const path = await import('path');
+      const designPath = path.join(process.cwd(), 'DESIGN.md');
+      const markdown = fs.existsSync(designPath) ? fs.readFileSync(designPath, 'utf-8') : '# DESIGN.md not found';
+      
+      const designHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DESIGN.md - Two-Way Sync Engine</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.1/github-markdown-dark.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body { background-color: #0d1117; margin: 0; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .top-nav { max-width: 980px; margin: 0 auto 16px auto; display: flex; justify-content: space-between; align-items: center; }
+    .top-nav a { color: #58a6ff; text-decoration: none; font-weight: 600; font-size: 14px; }
+    .top-nav a:hover { text-decoration: underline; }
+    .markdown-body { box-sizing: border-box; min-width: 200px; max-width: 980px; margin: 0 auto; padding: 45px; background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px; }
+    @media (max-width: 767px) { .markdown-body { padding: 15px; } }
+  </style>
+</head>
+<body>
+  <div class="top-nav">
+    <a href="/">← Back to Control Panel</a>
+    <a href="/docs">Open Swagger UI →</a>
+  </div>
+  <article class="markdown-body" id="content">Loading...</article>
+  <script>
+    const md = ${JSON.stringify(markdown)};
+    document.getElementById('content').innerHTML = marked.parse(md);
+  </script>
+</body>
+</html>`;
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      return res.end(designHtml);
     }
 
     // 2. GET /api/docs/openapi.json -> Serve OpenAPI 3.0 Specification
