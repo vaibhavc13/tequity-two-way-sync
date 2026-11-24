@@ -5,7 +5,6 @@ import { InboundWebhookHandler } from './services/inbound-webhook-handler.js';
 import { PortalAPIService } from './services/portal-api.js';
 import { OutboundSyncWorker } from './services/outbound-sync-worker.js';
 import { TokenBucketRateLimiter } from './services/rate-limiter.js';
-import { SF_INTEGRATION_USER } from './types.js';
 
 const PORT = 3000;
 const db = new DurableDatabase('./.data_server');
@@ -46,6 +45,172 @@ function parseJson(req: http.IncomingMessage): Promise<any> {
   });
 }
 
+function getOpenApiSpec(): object {
+  return {
+    openapi: '3.0.3',
+    info: {
+      title: 'Tequity Two-Way Sync Engine API',
+      version: '1.0.0',
+      description:
+        'REST API for the Two-Way Sync between Salesforce CRM and the Tequity Portal (PostgreSQL). Implements Webhook Deduplication (Rule 1), Field-Level Last-Write-Wins (Rule 2), Sync Loop Echo Suppression (Rule 3), and 6-Hour Outage Transactional Outbox (Rule 4).',
+    },
+    servers: [{ url: 'http://localhost:3000', description: 'Local Sync Server' }],
+    paths: {
+      '/api/contact/{id}': {
+        get: {
+          summary: 'Get Contact & Immutable Audit Trail',
+          description: 'Fetch the active record state and its complete historical audit trail.',
+          parameters: [
+            {
+              name: 'id',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', default: '0031A00000Abc' },
+            },
+          ],
+          responses: {
+            '200': { description: 'Contact found with audit trail.' },
+            '404': { description: 'Contact not found.' },
+          },
+        },
+      },
+      '/api/webhooks/salesforce': {
+        post: {
+          summary: 'Salesforce Inbound Webhook',
+          description:
+            'Simulate Salesforce sending an HTTPS webhook with changed fields. Demonstrates idempotency on duplicates, field-level LWW on out-of-order timestamps, and loop suppression on sync user writes.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    eventId: { type: 'string', example: 'evt_1001' },
+                    recordId: { type: 'string', example: '0031A00000Abc' },
+                    objectType: { type: 'string', example: 'Contact' },
+                    occurredAt: { type: 'string', example: '2026-11-25T12:00:00.000Z' },
+                    changedBy: { type: 'string', example: 'sales.user@client.example' },
+                    changedFields: {
+                      type: 'object',
+                      example: { phone: '+919876543210', city: 'Mumbai' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Webhook processed.' } },
+        },
+      },
+      '/api/portal/edit': {
+        post: {
+          summary: 'Portal User Edit (Transactional Outbox)',
+          description:
+            'Simulate a Finance or CS user saving an edit on the operations portal. Atomically updates PostgreSQL and enqueues an outbox task for Salesforce.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    recordId: { type: 'string', example: '0031A00000Abc' },
+                    objectType: { type: 'string', example: 'Contact' },
+                    editedBy: { type: 'string', example: 'finance.user@client.example' },
+                    changedFields: {
+                      type: 'object',
+                      example: { city: 'Bengaluru' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Edit committed and queued in Outbox.' } },
+        },
+      },
+      '/api/status': {
+        get: {
+          summary: 'System & Outbox Queue Status',
+          description:
+            'Inspect Salesforce outage mode, rate limiting, and the count of pending outbox events awaiting synchronization.',
+          responses: { '200': { description: 'System health and queue status.' } },
+        },
+      },
+      '/api/sync/drain': {
+        post: {
+          summary: 'Trigger Outbox Backlog Drain',
+          description:
+            'Instruct the background sync worker to drain pending outbox events to Salesforce CRM under the Token Bucket rate limit.',
+          responses: { '200': { description: 'Drain completed.' } },
+        },
+      },
+      '/api/salesforce/outage': {
+        post: {
+          summary: 'Toggle Salesforce 6-Hour Outage',
+          description:
+            'Simulate Salesforce returning HTTP 503 Service Unavailable or bring it back online to test crash durability and queue recovery.',
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { outage: { type: 'boolean', example: true } },
+                },
+              },
+            },
+          },
+          responses: { '200': { description: 'Outage state toggled.' } },
+        },
+      },
+    },
+  };
+}
+
+function getSwaggerUiHtml(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tequity Two-Way Sync API - Swagger UI</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css" />
+  <style>
+    body { margin: 0; background: #fafafa; font-family: sans-serif; }
+    .topbar-nav { background: #1e293b; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; color: white; }
+    .topbar-nav a { color: #38bdf8; text-decoration: none; font-weight: bold; font-size: 14px; margin-left: 16px; }
+    .topbar-nav a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="topbar-nav">
+    <span style="font-weight: 600; font-size: 16px;">Tequity Two-Way Sync Engine</span>
+    <div>
+      <a href="/">← Open 1-Click Interactive Dashboard</a>
+    </div>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = function() {
+      SwaggerUIBundle({
+        url: "/api/docs/openapi.json",
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIStandalonePreset
+        ],
+        layout: "BaseLayout"
+      });
+    };
+  </script>
+</body>
+</html>`;
+}
+
 function getHtmlDashboard(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -56,8 +221,11 @@ function getHtmlDashboard(): string {
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 24px; }
     .container { max-width: 1100px; margin: 0 auto; }
-    h1 { color: #38bdf8; margin-bottom: 8px; }
-    .subtitle { color: #94a3b8; margin-bottom: 24px; font-size: 15px; }
+    .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    h1 { color: #38bdf8; margin: 0; }
+    .swagger-btn { background: #0284c7; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 13px; }
+    .swagger-btn:hover { background: #0369a1; }
+    .subtitle { color: #94a3b8; margin-bottom: 24px; font-size: 14px; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 20px; }
     .card h2 { margin-top: 0; font-size: 18px; color: #e2e8f0; border-bottom: 1px solid #334155; padding-bottom: 10px; }
@@ -81,14 +249,15 @@ function getHtmlDashboard(): string {
 </head>
 <body>
   <div class="container">
-    <h1>Two-Way Sync Interactive Control Panel</h1>
+    <div class="header-bar">
+      <h1>Two-Way Sync Interactive Control Panel</h1>
+      <a href="/docs" class="swagger-btn">📖 Open Swagger UI API Explorer</a>
+    </div>
     <div class="subtitle">Simulate real-time Salesforce Webhooks, Portal Edits, Outages, and Outbox Drains with 1 click.</div>
 
     <div class="grid">
-      <!-- Action Buttons Card -->
       <div class="card">
         <h2>Simulate Actions (Click to Test)</h2>
-        
         <p style="color: #94a3b8; font-size: 13px; margin-top: 0;"><b>Inbound from Salesforce:</b></p>
         <button class="btn" onclick="sendWebhookFresh()">1. Salesforce Webhook: Update Phone (+919876543210)</button>
         <button class="btn btn-warn" onclick="sendWebhookDuplicate()">2. Duplicate Webhook: Send Same Event Again (Rule 1)</button>
@@ -101,7 +270,6 @@ function getHtmlDashboard(): string {
         <button class="btn btn-success" onclick="drainOutbox()">7. Drain Outbox Queue to Salesforce</button>
       </div>
 
-      <!-- State & Response Card -->
       <div class="card">
         <div class="badge-wrap">
           <h2 style="border: none; margin: 0; padding: 0;">Live System State</h2>
@@ -115,7 +283,6 @@ function getHtmlDashboard(): string {
       </div>
     </div>
 
-    <!-- Audit History Table Card -->
     <div class="card" style="margin-top: 20px;">
       <h2>Immutable Audit Trail (History of all edits)</h2>
       <div style="overflow-x: auto; max-height: 240px;">
@@ -142,7 +309,6 @@ function getHtmlDashboard(): string {
     const recordId = '0031A00000Abc';
 
     async function refreshData() {
-      // 1. Fetch Contact & Audit
       const res = await fetch('/api/contact/' + recordId);
       const data = await res.json();
       document.getElementById('contactView').textContent = JSON.stringify(data.contact, null, 2);
@@ -162,7 +328,6 @@ function getHtmlDashboard(): string {
         tbody.appendChild(tr);
       });
 
-      // 2. Fetch Status
       const stRes = await fetch('/api/status');
       const st = await stRes.json();
       document.getElementById('outboxCount').textContent = st.pendingOutboxCount;
@@ -201,7 +366,6 @@ function getHtmlDashboard(): string {
     }
 
     function sendWebhookDuplicate() {
-      // Re-send the exact same eventId
       handleAction('/api/webhooks/salesforce', 'POST', {
         eventId: lastEventId,
         recordId: recordId,
@@ -213,12 +377,11 @@ function getHtmlDashboard(): string {
     }
 
     function sendWebhookOutOfOrder() {
-      // Send an event dated in the past
       handleAction('/api/webhooks/salesforce', 'POST', {
         eventId: 'evt_stale_' + Date.now(),
         recordId: recordId,
         objectType: 'Contact',
-        occurredAt: '2026-11-01T10:00:00.000Z', // Old date!
+        occurredAt: '2026-11-01T10:00:00.000Z',
         changedBy: 'sales.user@client.example',
         changedFields: { city: 'Stale_Noida' }
       });
@@ -252,7 +415,6 @@ function getHtmlDashboard(): string {
       handleAction('/api/sync/drain', 'POST', {});
     }
 
-    // Refresh immediately on load
     refreshData();
     setInterval(refreshData, 3000);
   </script>
@@ -264,16 +426,28 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
   try {
-    // 0. GET / -> Serve Interactive Visual Control Panel
+    // 1. GET /docs or /swagger -> Serve Official Swagger UI
+    if (req.method === 'GET' && (url.pathname === '/docs' || url.pathname === '/swagger')) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      return res.end(getSwaggerUiHtml());
+    }
+
+    // 2. GET /api/docs/openapi.json -> Serve OpenAPI 3.0 Specification
+    if (req.method === 'GET' && url.pathname === '/api/docs/openapi.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(getOpenApiSpec(), null, 2));
+    }
+
+    // 3. GET / -> Serve 1-Click Interactive Dashboard
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       return res.end(getHtmlDashboard());
     }
 
-    // JSON response helper
+    // JSON API Endpoints
     res.setHeader('Content-Type', 'application/json');
 
-    // 1. GET /api/contact/:id -> View contact state & audit log
+    // 4. GET /api/contact/:id -> View contact state & audit log
     if (req.method === 'GET' && url.pathname.startsWith('/api/contact/')) {
       const id = url.pathname.replace('/api/contact/', '');
       const contact = db.getContact(id);
@@ -282,13 +456,20 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ contact, auditLogs }, null, 2));
     }
 
-    // 2. /api/webhooks/salesforce -> Webhook endpoint
+    // 5. POST /api/webhooks/salesforce -> Webhook endpoint
     if (url.pathname === '/api/webhooks/salesforce') {
       if (req.method !== 'POST') {
         res.writeHead(405);
-        return res.end(JSON.stringify({
-          error: 'Method Not Allowed: /api/webhooks/salesforce requires a POST request with JSON body. Visit http://localhost:3000 in your browser to test with 1 click!'
-        }, null, 2));
+        return res.end(
+          JSON.stringify(
+            {
+              error: 'Method Not Allowed: /api/webhooks/salesforce requires POST.',
+              swaggerUi: 'Visit http://localhost:3000/docs to test with Swagger UI.',
+            },
+            null,
+            2
+          )
+        );
       }
       const payload = await parseJson(req);
       const result = inboundHandler.processWebhook(payload);
@@ -296,13 +477,20 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(result, null, 2));
     }
 
-    // 3. /api/portal/edit -> Portal user edit endpoint
+    // 6. POST /api/portal/edit -> Portal user edit endpoint
     if (url.pathname === '/api/portal/edit') {
       if (req.method !== 'POST') {
         res.writeHead(405);
-        return res.end(JSON.stringify({
-          error: 'Method Not Allowed: /api/portal/edit requires a POST request with JSON body. Visit http://localhost:3000 in your browser to test with 1 click!'
-        }, null, 2));
+        return res.end(
+          JSON.stringify(
+            {
+              error: 'Method Not Allowed: /api/portal/edit requires POST.',
+              swaggerUi: 'Visit http://localhost:3000/docs to test with Swagger UI.',
+            },
+            null,
+            2
+          )
+        );
       }
       const payload = await parseJson(req);
       const result = portalApi.editContact(payload);
@@ -310,14 +498,14 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(result, null, 2));
     }
 
-    // 4. POST /api/sync/drain -> Trigger sync worker to drain outbox to Salesforce
+    // 7. POST /api/sync/drain -> Trigger sync worker to drain outbox to Salesforce
     if (req.method === 'POST' && url.pathname === '/api/sync/drain') {
       const stats = await syncWorker.drainQueue();
       res.writeHead(200);
       return res.end(JSON.stringify({ message: 'Outbox drained', stats }, null, 2));
     }
 
-    // 5. POST /api/salesforce/outage -> Toggle 6-hour Salesforce outage on/off
+    // 8. POST /api/salesforce/outage -> Toggle 6-hour Salesforce outage on/off
     if (req.method === 'POST' && url.pathname === '/api/salesforce/outage') {
       const body = await parseJson(req);
       const enable = body.outage ?? !sfdc.getIsOutage();
@@ -326,7 +514,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ salesforceOutage: sfdc.getIsOutage() }, null, 2));
     }
 
-    // 6. GET /api/status -> View pending outbox queue and CRM status
+    // 9. GET /api/status -> View pending outbox queue and CRM status
     if (req.method === 'GET' && url.pathname === '/api/status') {
       res.writeHead(200);
       return res.end(
@@ -343,10 +531,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     res.writeHead(404);
-    res.end(JSON.stringify({
-      error: 'Endpoint not found',
-      hint: 'Visit http://localhost:3000/ in your web browser for the visual control panel.'
-    }, null, 2));
+    res.end(
+      JSON.stringify(
+        {
+          error: 'Endpoint not found',
+          swaggerUi: 'http://localhost:3000/docs',
+          controlPanel: 'http://localhost:3000/',
+        },
+        null,
+        2
+      )
+    );
   } catch (err: any) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: err.message }, null, 2));
@@ -355,7 +550,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`\n========================================================================`);
-  console.log(`  Interactive Visual Control Panel: http://localhost:${PORT}/`);
-  console.log(`========================================================================`);
-  console.log(`Open http://localhost:${PORT}/ in your browser to test every rule visually!`);
+  console.log(`  📖 Swagger UI (OpenAPI 3.0):       http://localhost:${PORT}/docs`);
+  console.log(`  🎮 Interactive Control Panel:      http://localhost:${PORT}/`);
+  console.log(`========================================================================\n`);
 });
