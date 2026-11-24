@@ -14,22 +14,26 @@ const inboundHandler = new InboundWebhookHandler(db);
 const portalApi = new PortalAPIService(db);
 const syncWorker = new OutboundSyncWorker(db, sfdc, rateLimiter);
 
-// Seed default contact if missing
-if (!db.getContact('0031A00000Abc')) {
-  inboundHandler.processWebhook({
-    eventId: 'evt_init',
-    recordId: '0031A00000Abc',
-    objectType: 'Contact',
-    occurredAt: '2026-11-20T10:00:00.000Z',
-    changedBy: 'seed@client.example',
-    changedFields: {
-      fullName: 'Anita Roy',
-      phone: '+919111111111',
-      city: 'Delhi',
-      owner: 'sales.rep@client.example',
-    },
-  });
+function seedDefaultContact(): void {
+  if (!db.getContact('0031A00000Abc')) {
+    inboundHandler.processWebhook({
+      eventId: 'evt_init',
+      recordId: '0031A00000Abc',
+      objectType: 'Contact',
+      occurredAt: '2026-11-20T10:00:00.000Z',
+      changedBy: 'seed@client.example',
+      changedFields: {
+        fullName: 'Anita Roy',
+        phone: '+919111111111',
+        city: 'Delhi',
+        owner: 'sales.rep@client.example',
+      },
+    });
+  }
 }
+
+// Seed default contact if missing
+seedDefaultContact();
 
 function parseJson(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -165,6 +169,13 @@ function getOpenApiSpec(): object {
           responses: { '200': { description: 'Outage state toggled.' } },
         },
       },
+      '/api/reset': {
+        post: {
+          summary: 'Reset Demo State',
+          description: 'Clears all stored records, inbound deduplication keys, outbox queue, and audit logs, then re-seeds the baseline Contact 0031A00000Abc.',
+          responses: { '200': { description: 'Demo state reset to clean baseline.' } },
+        },
+      },
     },
   };
 }
@@ -271,6 +282,8 @@ function getHtmlDashboard(): string {
         <button class="btn btn-success" onclick="sendPortalEdit()">5. Portal Save: Finance changes City to "Bengaluru"</button>
         <button class="btn btn-danger" onclick="toggleOutage()">6. Toggle Salesforce 6-Hour Outage (Rule 4)</button>
         <button class="btn btn-success" onclick="drainOutbox()">7. Drain Outbox Queue to Salesforce</button>
+        <hr style="border:0; border-top:1px solid #334155; margin: 14px 0;">
+        <button class="btn" style="background: #475569;" onclick="resetDemo()">🔄 Reset Demo Data (Fresh Start)</button>
       </div>
 
       <div class="card">
@@ -416,6 +429,11 @@ function getHtmlDashboard(): string {
 
     function drainOutbox() {
       handleAction('/api/sync/drain', 'POST', {});
+    }
+
+    function resetDemo() {
+      lastEventId = 'evt_ui_1';
+      handleAction('/api/reset', 'POST', {});
     }
 
     refreshData();
@@ -565,6 +583,25 @@ const server = http.createServer(async (req, res) => {
             salesforceOutage: sfdc.getIsOutage(),
             pendingOutboxCount: db.getPendingOutboxEvents(true).length,
             pendingOutboxEvents: db.getPendingOutboxEvents(true),
+          },
+          null,
+          2
+        )
+      );
+    }
+
+    // 10. POST /api/reset -> Reset demo database & CRM state to clean baseline
+    if (req.method === 'POST' && url.pathname === '/api/reset') {
+      db.clearAll();
+      sfdc.setOutage(false);
+      sfdc.resetApiCallCount();
+      seedDefaultContact();
+      res.writeHead(200);
+      return res.end(
+        JSON.stringify(
+          {
+            message: 'Demo state reset to clean baseline.',
+            contactId: '0031A00000Abc',
           },
           null,
           2
