@@ -5,13 +5,15 @@ export interface PortalEditResult {
   success: boolean;
   message: string;
   outboxId?: number;
+  coalesced?: boolean;
+  noOp?: boolean;
 }
 
 /**
  * Portal API Service
  * Handles edits from Finance and Customer-Success staff.
- * Crucial guarantee: Uses Transactional Outbox pattern so the local DB update,
- * audit log entry, and outbox event commit in the same atomic transaction.
+ * Uses Transactional Outbox pattern with dirty-field detection (no-op skip)
+ * and pending outbox coalescing to protect Salesforce API quota.
  */
 export class PortalAPIService {
   private db: DurableDatabase;
@@ -22,8 +24,8 @@ export class PortalAPIService {
 
   public editContact(req: PortalEditRequest): PortalEditResult {
     let contact = this.db.getContact(req.recordId);
-    // Portal server generates the authoritative timestamp (CLOCK_TIMESTAMP equivalent)
     const serverTimestamp = new Date().toISOString();
+    let changedPayload: Record<string, string> = {};
 
     if (!contact) {
       contact = {
@@ -44,9 +46,14 @@ export class PortalAPIService {
         createdAt: serverTimestamp,
         updatedAt: serverTimestamp,
       };
+      changedPayload = { ...req.changedFields };
     } else {
       for (const [field, val] of Object.entries(req.changedFields)) {
         const oldVal = (contact[field as keyof Contact] as string) ?? null;
+        if (oldVal === val) {
+          continue; // Dirty check: skip unchanged fields
+        }
+        changedPayload[field] = val;
         (contact as any)[field] = val;
         (contact as any)[`${field}UpdatedAt`] = serverTimestamp;
 
@@ -62,29 +69,42 @@ export class PortalAPIService {
           status: 'APPLIED',
         });
       }
+
+      if (Object.keys(changedPayload).length === 0) {
+        return {
+          success: true,
+          message: `No fields changed on Contact ${req.recordId}. Outbox sync skipped (no-op).`,
+          noOp: true,
+        };
+      }
+
       contact.updatedAt = serverTimestamp;
     }
 
     this.db.saveContact(contact);
 
-    // Atomically enqueue to Outbox
-    const outbox = this.db.appendOutboxEvent(
+    // Atomically enqueue or coalesce into existing PENDING outbox event
+    const { event, coalesced } = this.db.upsertPendingOutboxEvent(
       contact.id,
       'Contact',
       'UPDATE',
-      req.changedFields
+      changedPayload
     );
 
     return {
       success: true,
-      message: `Contact ${req.recordId} updated by ${req.editedBy}. Queued for outbound sync (Outbox #${outbox.id}).`,
-      outboxId: outbox.id,
+      message: coalesced
+        ? `Contact ${req.recordId} updated by ${req.editedBy}. Coalesced into pending Outbox #${event.id}.`
+        : `Contact ${req.recordId} updated by ${req.editedBy}. Queued for outbound sync (Outbox #${event.id}).`,
+      outboxId: event.id,
+      coalesced,
     };
   }
 
   public editCustomer(req: PortalEditRequest): PortalEditResult {
     let customer = this.db.getCustomer(req.recordId);
     const serverTimestamp = new Date().toISOString();
+    let changedPayload: Record<string, string> = {};
 
     if (!customer) {
       customer = {
@@ -99,9 +119,14 @@ export class PortalAPIService {
         createdAt: serverTimestamp,
         updatedAt: serverTimestamp,
       };
+      changedPayload = { ...req.changedFields };
     } else {
       for (const [field, val] of Object.entries(req.changedFields)) {
         const oldVal = (customer[field as keyof Customer] as string) ?? null;
+        if (oldVal === val) {
+          continue;
+        }
+        changedPayload[field] = val;
         (customer as any)[field] = val;
         (customer as any)[`${field}UpdatedAt`] = serverTimestamp;
 
@@ -117,22 +142,34 @@ export class PortalAPIService {
           status: 'APPLIED',
         });
       }
+
+      if (Object.keys(changedPayload).length === 0) {
+        return {
+          success: true,
+          message: `No fields changed on Customer ${req.recordId}. Outbox sync skipped (no-op).`,
+          noOp: true,
+        };
+      }
+
       customer.updatedAt = serverTimestamp;
     }
 
     this.db.saveCustomer(customer);
 
-    const outbox = this.db.appendOutboxEvent(
+    const { event, coalesced } = this.db.upsertPendingOutboxEvent(
       customer.id,
       'Customer',
       'UPDATE',
-      req.changedFields
+      changedPayload
     );
 
     return {
       success: true,
-      message: `Customer ${req.recordId} updated by ${req.editedBy}. Queued for outbound sync (Outbox #${outbox.id}).`,
-      outboxId: outbox.id,
+      message: coalesced
+        ? `Customer ${req.recordId} updated by ${req.editedBy}. Coalesced into pending Outbox #${event.id}.`
+        : `Customer ${req.recordId} updated by ${req.editedBy}. Queued for outbound sync (Outbox #${event.id}).`,
+      outboxId: event.id,
+      coalesced,
     };
   }
 }

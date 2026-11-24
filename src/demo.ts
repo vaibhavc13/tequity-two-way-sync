@@ -190,10 +190,10 @@ async function runDemo(): Promise<void> {
   sfdc.setOutage(true);
   console.log(`Salesforce CRM status: OUTAGE = ${sfdc.getIsOutage()}`);
 
-  console.log('\nPortal users save 15 consecutive edits during the outage window...');
+  console.log('\nPortal users save 15 consecutive edits across contacts during the outage window...');
   for (let i = 1; i <= 15; i++) {
     portalApi.editContact({
-      recordId,
+      recordId: `${recordId}_${i}`,
       objectType: 'Contact',
       editedBy: `ops.user${i}@client.example`,
       changedFields: { city: `City_Batch_${i}` },
@@ -242,8 +242,8 @@ async function runDemo(): Promise<void> {
   console.log(`  - Salesforce calls received: ${sfdc.getApiCallCount()}`);
   console.log(`  - Remaining pending outbox items: ${db.getPendingOutboxEvents().length}`);
 
-  const finalContactInSfdc = sfdc.getRecord(recordId);
-  console.log(`\nFinal State in Salesforce CRM: city="${finalContactInSfdc?.fields['city']}"`);
+  const finalContactInSfdc = sfdc.getRecord(`${recordId}_15`);
+  console.log(`\nFinal State in Salesforce CRM (${recordId}_15): city="${finalContactInSfdc?.fields['city']}"`);
 
   if (
     drainStats.successCount === 15 &&

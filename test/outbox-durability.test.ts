@@ -29,10 +29,10 @@ describe('Sync Engine - Rule 4: Outbox Durability, Outage Backoff & Restart Reco
     // 1. Simulate Salesforce 6-hour outage
     sfdc.setOutage(true);
 
-    // 2. Portal users save 10 consecutive edits during outage window
+    // 2. Portal users save 10 edits across contacts during outage window
     for (let i = 1; i <= 10; i++) {
       portalApi.editContact({
-        recordId,
+        recordId: `${recordId}_${i}`,
         objectType: 'Contact',
         editedBy: `user${i}@client.example`,
         changedFields: { city: `City_${i}` },
@@ -72,7 +72,47 @@ describe('Sync Engine - Rule 4: Outbox Durability, Outage Backoff & Restart Reco
     assert.strictEqual(rebootedDb.getPendingOutboxEvents().length, 0);
 
     // Verify SFDC received the latest state
-    const sfRecord = sfdc.getRecord(recordId);
+    const sfRecord = sfdc.getRecord(`${recordId}_10`);
     assert.strictEqual(sfRecord?.fields['city'], 'City_10');
+  });
+
+  test('should skip unchanged fields (no-op) and coalesce multiple pending edits for the same record', () => {
+    // 1. First save creates Outbox #1
+    const res1 = portalApi.editContact({
+      recordId,
+      objectType: 'Contact',
+      editedBy: 'finance@client.example',
+      changedFields: { city: 'Bengaluru' },
+    });
+    assert.strictEqual(res1.outboxId, 1);
+    assert.strictEqual(res1.coalesced, false);
+    assert.strictEqual(db.getPendingOutboxEvents().length, 1);
+
+    // 2. Duplicate save with exact same value -> No-op, no extra outbox event
+    const resDup = portalApi.editContact({
+      recordId,
+      objectType: 'Contact',
+      editedBy: 'finance@client.example',
+      changedFields: { city: 'Bengaluru' },
+    });
+    assert.strictEqual(resDup.noOp, true);
+    assert.strictEqual(db.getPendingOutboxEvents().length, 1);
+
+    // 3. New edit to another field while Outbox #1 is still PENDING -> coalesced into Outbox #1
+    const resCoalesce = portalApi.editContact({
+      recordId,
+      objectType: 'Contact',
+      editedBy: 'finance@client.example',
+      changedFields: { phone: '+919999888877' },
+    });
+    assert.strictEqual(resCoalesce.coalesced, true);
+    assert.strictEqual(resCoalesce.outboxId, 1);
+
+    const pending = db.getPendingOutboxEvents();
+    assert.strictEqual(pending.length, 1);
+    assert.deepStrictEqual(pending[0].payload, {
+      city: 'Bengaluru',
+      phone: '+919999888877',
+    });
   });
 });

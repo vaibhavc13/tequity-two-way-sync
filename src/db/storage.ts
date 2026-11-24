@@ -114,6 +114,31 @@ export class DurableDatabase {
     return event;
   }
 
+  /**
+   * Coalesces into an existing PENDING outbox event for the same record if one exists,
+   * reducing redundant Salesforce API calls during bursts or outages.
+   */
+  public upsertPendingOutboxEvent(
+    recordId: string,
+    objectType: 'Customer' | 'Contact',
+    operation: 'CREATE' | 'UPDATE',
+    payload: Record<string, string>
+  ): { event: OutboxEvent; coalesced: boolean } {
+    const existing = this.data.outboxEvents.find(
+      (e) => e.recordId === recordId && e.objectType === objectType && e.status === 'PENDING'
+    );
+
+    if (existing) {
+      existing.payload = { ...existing.payload, ...payload };
+      existing.updatedAt = new Date().toISOString();
+      this.flushToDisk();
+      return { event: existing, coalesced: true };
+    }
+
+    const event = this.appendOutboxEvent(recordId, objectType, operation, payload);
+    return { event, coalesced: false };
+  }
+
   public getPendingOutboxEvents(includeBackoff: boolean = false): OutboxEvent[] {
     const now = new Date().toISOString();
     return this.data.outboxEvents.filter((e) => {
